@@ -24,7 +24,19 @@ network:
 
 ubuntu:
   version: "24.04"
+  timezone: Europe/Prague
+  ntp:
+    enabled: true
+    servers:
+      - pool.ntp.org
 
 access:
   username: admin
   ssh_public_key: ~/.ssh/id_ed25519.pub
+  password_authentication: false
+
+console:
+  serial:
+    enabled: true
+    device: ttyS0
+    baud: 115200
