@@ -22,6 +22,11 @@ build/
 dist/
 *.log
 
+# Local ISO files
+temp/
+*.iso
+*.ISO
+
 # IDE
 .vscode/
 .idea/
