@@ -10,11 +10,13 @@ The initial target environment is:
 
 - KVM
 - libvirt / virsh
-- Ubuntu Server
+- Ubuntu Server 24.04
 - SSH access to the KVM host
 - Linux bridge networking
 - qcow2 VM disks
 - cloud-init / Ubuntu autoinstall
+- serial console access
+- automatic timezone and NTP configuration
 
 ## Planned workflow
 
@@ -23,43 +25,117 @@ The initial target environment is:
 3. Connect to the selected KVM host over SSH.
 4. Verify KVM/libvirt availability.
 5. Verify the requested network bridge.
-6. Verify storage availability.
+6. Verify storage availability and capacity.
 7. Check that the VM name and IP address are not already in use.
 8. Create the VM storage.
 9. Generate the Ubuntu installation configuration.
 10. Create the VM definition.
 11. Install Ubuntu Server automatically.
-12. Configure hostname, networking, SSH and initial user.
-13. Start the VM.
-14. Wait for the operating system to become available.
-15. Test network connectivity.
-16. Test SSH connectivity.
-17. Run post-installation validation.
-18. Produce a clear success/failure report.
+12. Configure hostname, networking, DNS, SSH and initial user.
+13. Configure timezone.
+14. Configure NTP time synchronization.
+15. Configure serial console access.
+16. Start the VM.
+17. Wait for the operating system and network to become available.
+18. Test SSH connectivity.
+19. Verify time synchronization.
+20. Run post-installation validation.
+21. Produce a clear success/failure report.
+22. Optionally clean up partially created resources after a failed build.
 
-## Example input
+## Parameters
 
-The first interactive version should collect approximately:
+The interactive builder is designed to collect:
 
 - KVM host IP/FQDN
 - KVM SSH username
+- SSH private key
 - VM name
 - hostname
-- IPv4 address
-- subnet/prefix
+- IPv4 address/prefix
 - gateway
 - DNS servers
 - Ubuntu version
 - CPU count
 - RAM
 - disk size
-- libvirt storage location
+- libvirt storage pool/location
 - network bridge
-- SSH username
-- SSH public key
-- optional additional packages
+- Ubuntu SSH username
+- timezone
+- NTP enabled/disabled
+- one or more NTP servers
+- SSH password authentication policy
+- serial console settings
 
 Sensitive information such as passwords and private SSH keys must never be stored in the repository.
+
+## Time synchronization
+
+Ubuntu VMs will be configured with an explicit timezone and NTP settings during automated installation/post-installation.
+
+Default timezone:
+
+```text
+Europe/Prague
+```
+
+NTP can use either internal company NTP servers or public servers such as:
+
+```text
+pool.ntp.org
+```
+
+Multiple servers are supported, for example:
+
+```text
+10.10.10.10,10.10.10.11
+```
+
+After installation the builder should verify synchronization and report it separately from the VM installation result. A VM can therefore complete successfully with an NTP warning instead of being incorrectly reported as a total installation failure.
+
+Expected validation includes:
+
+```bash
+timedatectl status
+timedatectl show-timesync --all
+```
+
+## SSH and security
+
+The preferred access method is SSH public-key authentication.
+
+The planned default is:
+
+- create an administrator user
+- install the supplied SSH public key
+- disable SSH password authentication unless explicitly enabled
+- do not require root SSH login
+- verify TCP/22 after installation
+
+## Serial console
+
+The VM will be configured for a usable libvirt serial console.
+
+The Ubuntu kernel configuration will include:
+
+```text
+console=ttyS0,115200n8
+```
+
+The guest will enable:
+
+```bash
+systemctl enable serial-getty@ttyS0.service
+```
+
+The intended administrator workflow is:
+
+```bash
+virsh console <vm-name>
+```
+
+This provides a recovery path when SSH or the network is unavailable.
 
 ## Target architecture
 
@@ -96,20 +172,20 @@ KVM-Ubuntu-VM-Builder
 
 Build a read-only discovery mode.
 
-The tool should connect to a KVM host and report:
+The tool connects to a KVM host and reports:
 
 - hostname
 - OS
-- libvirt version
-- virsh version
+- kernel
+- libvirt/virsh version
 - available bridges
 - available storage pools
-- available disk space
+- host CPU and memory
 - existing VMs
-- existing VM names
-- basic host capacity
 
-No changes should be made to the host.
+The interactive parameters are also validated, including network, hostname, timezone, NTP and SSH policy.
+
+**No VM changes are made in Phase 1.**
 
 ### Phase 2 - VM definition
 
@@ -122,7 +198,7 @@ Tasks:
 - configure CPU
 - configure RAM
 - configure network
-- configure console
+- configure serial console
 - generate libvirt XML or use virt-install
 
 ### Phase 3 - Automated Ubuntu installation
@@ -131,11 +207,14 @@ Implement unattended Ubuntu Server installation.
 
 Preferred approach:
 
-- cloud-init
 - Ubuntu autoinstall
-- No interactive installer
-- Static or DHCP networking
+- cloud-init
+- no interactive installer
+- static or DHCP networking
 - SSH enabled automatically
+- timezone configured automatically
+- NTP configured automatically
+- serial console available automatically
 
 ### Phase 4 - Post-install configuration
 
@@ -150,6 +229,9 @@ After installation:
 - verify disk
 - verify RAM
 - verify CPU
+- verify timezone
+- verify NTP synchronization
+- verify serial-getty
 - optionally install requested packages
 
 ### Phase 5 - Safety and rollback
@@ -160,6 +242,7 @@ Before creating the VM:
 - validate IP address
 - validate subnet
 - validate gateway
+- validate DNS
 - validate bridge
 - validate disk size
 - validate available storage
@@ -168,6 +251,20 @@ Before creating the VM:
 - check for duplicate IP where possible
 
 If a build fails, the tool should provide a clear error and optionally clean up partially created resources.
+
+Example:
+
+```text
+BUILD FAILED
+
+VM installation:       FAILED
+Network:               OK
+SSH:                   NOT TESTED
+Serial console:        OK
+NTP:                   NOT TESTED
+
+Remove incomplete VM and disk? [Y/n]
+```
 
 ### Phase 6 - CLI
 
@@ -205,10 +302,23 @@ network:
 
 ubuntu:
   version: "24.04"
+  timezone: Europe/Prague
+  ntp:
+    enabled: true
+    servers:
+      - 10.10.10.10
+      - 10.10.10.11
 
 access:
   username: admin
   ssh_public_key: ~/.ssh/id_ed25519.pub
+  password_authentication: false
+
+console:
+  serial:
+    enabled: true
+    device: ttyS0
+    baud: 115200
 ```
 
 Secrets must be supplied through environment variables, SSH agent, or another secure mechanism.
@@ -221,7 +331,11 @@ Secrets must be supplied through environment variables, SSH agent, or another se
 - Clear logging
 - Dry-run mode before changes
 - SSH key authentication preferred
+- Password authentication disabled by default
 - No secrets committed to Git
+- Serial console enabled by default
+- Explicit timezone and NTP configuration
+- Post-install validation
 - Modular Python implementation
 - Easy to extend to additional Linux distributions later
 
@@ -244,6 +358,8 @@ The project may later support:
 
 ## Current status
 
-**Project initialized - design phase**
+**Phase 1 - Discovery and validation**
+
+The project currently provides an interactive, read-only builder prototype with dry-run support. It validates VM, network, timezone, NTP and SSH parameters and displays the planned provisioning workflow.
 
 No VM creation functionality is implemented yet.
